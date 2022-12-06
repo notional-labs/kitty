@@ -83,6 +83,15 @@ import (
 	// unnamed import of statik for swagger UI support
 	_ "github.com/cosmos/cosmos-sdk/client/docs/statik"
 	ibcclienttypes "github.com/cosmos/ibc-go/v3/modules/core/02-client/types"
+
+	adminmodulemodule "github.com/cosmos/admin-module/x/adminmodule"
+	adminmodulecli "github.com/cosmos/admin-module/x/adminmodule/client/cli"
+	adminmodulemodulekeeper "github.com/cosmos/admin-module/x/adminmodule/keeper"
+
+	upgraderest "github.com/cosmos/cosmos-sdk/x/upgrade/client/rest"
+
+	govclient "github.com/cosmos/cosmos-sdk/x/gov/client"
+	paramsrest "github.com/cosmos/cosmos-sdk/x/params/client/rest"
 )
 
 const (
@@ -113,6 +122,21 @@ var (
 		vesting.AppModuleBasic{},
 		//router.AppModuleBasic{},
 		ibcconsumer.AppModuleBasic{},
+
+		adminmodulemodule.NewAppModuleBasic(
+			govclient.NewProposalHandler(
+				adminmodulecli.NewSubmitParamChangeProposalTxCmd,
+				paramsrest.ProposalRESTHandler,
+			),
+			govclient.NewProposalHandler(
+				adminmodulecli.NewCmdSubmitUpgradeProposal,
+				upgraderest.ProposalRESTHandler,
+			),
+			govclient.NewProposalHandler(
+				adminmodulecli.NewCmdSubmitCancelUpgradeProposal,
+				upgraderest.ProposalCancelRESTHandler,
+			),
+		),
 	)
 
 	// module account permissions
@@ -157,15 +181,16 @@ type App struct { // nolint: golint
 	// from consumer chain or set to use an independant
 	// different fee-pool from the consumer chain ConsumerKeeper
 
-	CrisisKeeper   crisiskeeper.Keeper
-	UpgradeKeeper  upgradekeeper.Keeper
-	ParamsKeeper   paramskeeper.Keeper
-	IBCKeeper      *ibckeeper.Keeper // IBC Keeper must be a pointer in the app, so we can SetRouter on it correctly
-	EvidenceKeeper evidencekeeper.Keeper
-	TransferKeeper ibctransferkeeper.Keeper
-	FeeGrantKeeper feegrantkeeper.Keeper
-	AuthzKeeper    authzkeeper.Keeper
-	ConsumerKeeper ibcconsumerkeeper.Keeper
+	CrisisKeeper      crisiskeeper.Keeper
+	UpgradeKeeper     upgradekeeper.Keeper
+	ParamsKeeper      paramskeeper.Keeper
+	IBCKeeper         *ibckeeper.Keeper // IBC Keeper must be a pointer in the app, so we can SetRouter on it correctly
+	EvidenceKeeper    evidencekeeper.Keeper
+	TransferKeeper    ibctransferkeeper.Keeper
+	FeeGrantKeeper    feegrantkeeper.Keeper
+	AuthzKeeper       authzkeeper.Keeper
+	ConsumerKeeper    ibcconsumerkeeper.Keeper
+	AdminmoduleKeeper adminmodulemodulekeeper.Keeper
 
 	// make scoped keepers public for test purposes
 	ScopedIBCKeeper         capabilitykeeper.ScopedKeeper
@@ -338,6 +363,24 @@ func New(
 		app.IBCKeeper,
 		authtypes.FeeCollectorName,
 	)
+
+	app.ConsumerKeeper = *app.ConsumerKeeper.SetHooks(app.SlashingKeeper.Hooks())
+	consumerModule := ccvconsumer.NewAppModule(app.ConsumerKeeper)
+
+	adminRouter := govtypes.NewRouter()
+	adminRouter.AddRoute(govtypes.RouterKey, govtypes.ProposalHandler).
+		AddRoute(proposaltypes.RouterKey, params.NewParamChangeProposalHandler(app.ParamsKeeper)).
+		AddRoute(upgradetypes.RouterKey, upgrade.NewSoftwareUpgradeProposalHandler(app.UpgradeKeeper)).
+		AddRoute(ibcclienttypes.RouterKey, ibcclient.NewClientProposalHandler(app.IBCKeeper.ClientKeeper))
+
+	app.AdminmoduleKeeper = *adminmodulemodulekeeper.NewKeeper(
+		appCodec,
+		keys[adminmodulemoduletypes.StoreKey],
+		keys[adminmodulemoduletypes.MemStoreKey],
+		adminRouter,
+		IsProposalWhitelisted,
+	)
+	adminModule := adminmodulemodule.NewAppModule(appCodec, app.AdminmoduleKeeper)
 
 	// register slashing module Slashing hooks to the consumer keeper
 	app.ConsumerKeeper = *app.ConsumerKeeper.SetHooks(app.SlashingKeeper.Hooks())
